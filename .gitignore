@@ -1,0 +1,34 @@
+# 환경변수
+.env
+
+# 데이터 캐시 (용량 크고 실행 시 자동 생성)
+data/cache/
+data/faiss_index/
+data/bm25_cache.pkl
+data/web_cache/
+data/eval_dataset.json
+data/
+
+# 생성된 보고서
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
