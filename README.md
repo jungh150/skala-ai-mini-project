@@ -45,3 +45,9 @@ HBM4, PIM, CXL 기술에 대한 경쟁사 위협 수준을 분석하고, R&D 우
 ├── outputs/               # 생성된 초안 및 최종 PDF 보고서
 ├── app.py                 # 워크플로우 실행 스크립트
 └── README.md
+
+## Contributors
+- 조정윤: 
+- 신정화: 
+- 김도연: 
+- 권서현: 
