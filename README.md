@@ -1,0 +1,1 @@
+# skala-ai-mini-project
