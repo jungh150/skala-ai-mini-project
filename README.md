@@ -121,11 +121,11 @@ cp .env.example .env
 # 3. 실행 (첫 실행 시 arXiv PDF 자동 다운로드 및 인덱싱 — 약 5분 소요)
 uv run python app.py
 
-# 4. Retriever 비교 평가 (선택)
-uv run python evaluate_retrieval.py
-
-# 5. 임베딩 모델 비교 평가 (선택)
+# 4. 임베딩 모델 비교 평가 (선택)
 uv run python evaluate_embedding.py
+
+# 5. Retriever 비교 평가 (선택)
+uv run python evaluate_retrieval.py
 
 # 평가셋 캐시 초기화 후 재생성 (문서 변경 시)
 uv run python evaluate_embedding.py --reset-eval
