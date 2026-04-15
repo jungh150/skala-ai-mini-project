@@ -437,31 +437,40 @@ def _add_table_from_markdown(story: List, line: str, font_name: str):
 
 
 def run_formatting_node(state: AgentState) -> AgentState:
-    """Formatting Node 실행"""
+    """
+    Formatting Node 실행.
+
+    【설계서 준수】
+    설계서 명시: formatting_node → supervisor → END
+    따라서 PDF 생성 완료 후 next를 "end"로 직접 설정하지 않고
+    final_report_path에 경로를 저장한 뒤 supervisor로 복귀한다.
+    supervisor가 final_report_path를 확인하고 최종 END를 결정한다.
+    """
     print("\n[Formatting Node] PDF 생성 시작...")
-    
+
     draft = state.get("draft", "")
     if not draft:
         print("[Formatting Node] 오류: 초안 없음")
         return state
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"ai-mini_output_2반_조정윤신정화김도연권서현_{timestamp}.pdf"
     output_path = os.path.join(OUTPUT_DIR, filename)
-    
+
     try:
         result_path = generate_pdf(draft, output_path)
         print(f"[Formatting Node] PDF 생성 완료: {result_path}")
-        state["next"] = "end"
+        # supervisor로 복귀 — supervisor가 final_report_path 확인 후 END 결정
+        state["final_report_path"] = result_path
     except Exception as e:
         print(f"[Formatting Node] PDF 생성 실패: {e}")
         import traceback
         traceback.print_exc()
-        # 텍스트 백업
+        # 텍스트 백업 저장 후 supervisor로 복귀
         txt_path = output_path.replace(".pdf", ".txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(draft)
         print(f"[Formatting Node] 텍스트 백업 저장: {txt_path}")
-        state["next"] = "end"
-    
+        state["final_report_path"] = txt_path  # 백업 경로라도 저장하여 종료 조건 충족
+
     return state

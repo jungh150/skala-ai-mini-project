@@ -1,0 +1,30 @@
+[project]
+name = "hbm-analysis"
+version = "0.1.0"
+description = "HBM4·PIM·CXL 경쟁사 기술 전략 분석 멀티에이전트 시스템"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "beautifulsoup4>=4.12.0",
+  "einops>=0.8.2",
+  "faiss-cpu>=1.8.0",
+  "langchain>=0.3.0",
+  "langchain-community>=0.3.0",
+  "langchain-huggingface>=0.1.0",
+  "langchain-openai>=0.2.0",
+  "langchain-voyageai>=0.3.3",
+  "langgraph>=0.2.0",
+  "pandas>=3.0.2",
+  "pypdf>=4.0.0",
+  "python-dotenv>=1.0.0",
+  "rank-bm25>=0.2.2",
+  "reportlab>=4.0.0",
+  "requests>=2.31.0",
+  "sentence-transformers>=3.0.0",
+  "tavily-python>=0.3.0",
+  "tiktoken>=0.7.0",
+  "voyageai>=0.3.7",
+]
+
+[tool.uv]
+package = false

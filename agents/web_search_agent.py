@@ -207,7 +207,7 @@ class WebSearchAgent:
             "CXL memory compute express link adoption 2025",
         ]
 
-    def search(self, query: str) -> List[Dict]:
+    def search(self, query: str, planned_queries: Optional[List[str]] = None) -> List[Dict]:
         """웹 검색 수행 (공식 페이지 + 검색 API)"""
         all_results = []
 
@@ -217,7 +217,7 @@ class WebSearchAgent:
         all_results.extend(official)
 
         # 2. 검색 API (Tavily 우선, DuckDuckGo fallback)
-        queries = self._generate_diverse_queries(query)
+        queries = planned_queries or self._generate_diverse_queries(query)
         print(f"  [Web] 검색 API 쿼리 {len(queries)}개 실행...")
 
         tavily_results = self._search_tavily(queries)
@@ -250,7 +250,8 @@ def run_web_search_agent(state: AgentState) -> AgentState:
     """Web Search Agent 노드 실행"""
     print("\n[Web Search Agent] 웹 검색 시작...")
     agent = WebSearchAgent()
-    results = agent.search(state["query"])
+    results = agent.search(state["query"], state.get("search_queries", {}).get("web"))
     print(f"[Web Search Agent] 검색 완료: {len(results)}개 결과")
     state["web_results"] = results
+    state["web_done"] = True
     return state
