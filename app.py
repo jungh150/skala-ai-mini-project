@@ -1,14 +1,15 @@
 """
-SK Hynix R&D 기술 전략 분석 시스템
-설계 문서와 일치하는 Supervisor 패턴 기반 LangGraph 워크플로우
+app.py
+SK Hynix R&D 기술 전략 분석 시스템 — LangGraph 워크플로우 진입점
 
-【그래프 엣지 설계】
-설계서 명시 흐름:
-    formatting_node → supervisor  # PDF 생성 완료 반환
-    supervisor      → END         # 생성 확인 후
+그래프 구조:
+    START → supervisor
+    supervisor → rag | web_search | trl | draft | format | END  (조건부 분기)
+    rag / web_search / trl / draft / format → supervisor  (결과 반환)
+    supervisor → END  (final_report_path 확인 후 종료)
 
-따라서 format 노드는 supervisor로 복귀하고,
-supervisor가 final_report_path 확인 후 END로 라우팅한다.
+Formatting Node는 PDF 생성 후 supervisor로 복귀하며,
+supervisor가 final_report_path를 확인하고 최종 종료를 결정한다.
 """
 import os
 import sys
@@ -51,13 +52,7 @@ def format_node(state: AgentState) -> AgentState:
 
 
 def route_supervisor(state: AgentState) -> str:
-    """
-    Supervisor의 state["next"] 값에 따라 다음 노드를 결정한다.
-
-    "end" 라우팅은 Supervisor가 final_report_path 확인 후 직접 결정한다.
-    Formatting Node가 END로 직행하지 않고 Supervisor를 경유하는 것이
-    설계서의 의도("생성 확인 후 END")를 정확히 구현한다.
-    """
+    """state["next"] 값에 따라 다음 실행 노드를 결정한다."""
     next_node = state.get("next", "draft")
     if next_node == "rag":
         return "rag"
@@ -77,18 +72,18 @@ def route_supervisor(state: AgentState) -> str:
 def build_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    # ── 노드 등록 ──────────────────────────────────────────────────────────────
+    # 노드 등록
     workflow.add_node("supervisor", supervisor_node)
-    workflow.add_node("rag", rag_node)
+    workflow.add_node("rag",        rag_node)
     workflow.add_node("web_search", web_search_node)
-    workflow.add_node("trl", trl_node)
-    workflow.add_node("draft", draft_node)
-    workflow.add_node("format", format_node)
+    workflow.add_node("trl",        trl_node)
+    workflow.add_node("draft",      draft_node)
+    workflow.add_node("format",     format_node)
 
-    # ── 진입점 ────────────────────────────────────────────────────────────────
+    # 진입점
     workflow.set_entry_point("supervisor")
 
-    # ── Supervisor → 조건부 분기 ───────────────────────────────────────────────
+    # Supervisor 조건부 분기
     workflow.add_conditional_edges(
         "supervisor",
         route_supervisor,
@@ -102,18 +97,12 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # ── 고정 엣지: 각 노드 → Supervisor 복귀 ─────────────────────────────────
-    # 설계서 명시:
-    #   rag_agent        → supervisor  (결과 반환)
-    #   web_search_agent → supervisor  (결과 반환)
-    #   trl_node         → supervisor  (평가 결과 반환)
-    #   draft_agent      → supervisor  (초안 검증 요청)
-    #   formatting_node  → supervisor  (PDF 생성 완료 반환) ← 핵심 수정
+    # 각 노드 → Supervisor 복귀
     workflow.add_edge("rag",        "supervisor")
     workflow.add_edge("web_search", "supervisor")
     workflow.add_edge("trl",        "supervisor")
     workflow.add_edge("draft",      "supervisor")
-    workflow.add_edge("format",     "supervisor")   # format이 END가 아닌 supervisor로 복귀
+    workflow.add_edge("format",     "supervisor")
 
     return workflow.compile()
 
@@ -132,26 +121,26 @@ def run_analysis(query: str = None) -> dict:
     print("=" * 70)
 
     initial_state: AgentState = {
-        "query":            query,
-        "search_queries":   {},
-        "rag_results":      [],
-        "web_results":      [],
-        "rag_done":         False,
-        "web_done":         False,
-        "retrieval_ready":  False,
-        "trl_evidence":     {},
-        "trl_assessment":   "",
-        "missing_trl_info": [],
-        "trl_ready":        False,
-        "draft":            "",
-        "validation_pass":  False,
-        "feedback":         "",
-        "iteration_count":  0,
-        "retry_count":      0,
-        "trl_retry_count":  0,
+        "query":             query,
+        "search_queries":    {},
+        "rag_results":       [],
+        "web_results":       [],
+        "rag_done":          False,
+        "web_done":          False,
+        "retrieval_ready":   False,
+        "trl_evidence":      {},
+        "trl_assessment":    "",
+        "missing_trl_info":  [],
+        "trl_ready":         False,
+        "draft":             "",
+        "validation_pass":   False,
+        "feedback":          "",
+        "iteration_count":   0,
+        "retry_count":       0,
+        "trl_retry_count":   0,
         "final_report_path": "",
-        "fallback_flags":   {},
-        "next":             "",
+        "fallback_flags":    {},
+        "next":              "",
         "validation_details": "",
     }
 
@@ -173,6 +162,6 @@ def run_analysis(query: str = None) -> dict:
 
 if __name__ == "__main__":
     if not os.getenv("OPENAI_API_KEY"):
-        print("❌ 오류: OPENAI_API_KEY가 설정되지 않았습니다.")
+        print("오류: OPENAI_API_KEY가 설정되지 않았습니다.")
         sys.exit(1)
     run_analysis()

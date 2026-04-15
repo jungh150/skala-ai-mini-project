@@ -1,22 +1,25 @@
 """
-Supervisor: 전체 워크플로우 조율
-- T1 질의 분석 및 검색 계획 수립
-- T2 RAG / T3 Web Search 개별 호출
-- T4 수집 정보 통합·평가 및 재검색 분기
-- TRL Evaluation Node 호출 및 재검색 분기
-- T6 초안 검증 루프 (max 3회)
-- T7 PDF 생성 종료 정책 (Formatting Node 복귀 후 최종 확인)
+supervisor.py
+Supervisor Agent — 워크플로우 전체 조율
 
-【retry_count 분리 설계】
-- retry_count     : T4(검색 충분성) 단계의 재검색 횟수 (max 2)
-- trl_retry_count : TRL 근거 부족으로 인한 재검색 횟수 (max 2)
-두 카운터를 분리하여 T4에서 재검색 기회를 소진해도
-TRL 단계에서 독립적으로 재검색을 시도할 수 있게 한다.
+담당 Task:
+    T1  질의 분석 및 검색 계획 수립
+    T2  RAG Agent 호출
+    T3  Web Search Agent 호출
+    T4  Retrieval Sufficiency Check 및 재검색 분기
+    T5  TRL Evaluation Node 호출 및 재검색 분기
+    T6  초안 품질 검증 루프 (max 3회)
+    T7  PDF 생성 확인 후 종료
 
-【company_ok 수정】
-기존 코드는 web_results의 'company' 필드만 확인했으나,
-Tavily/DuckDuckGo 검색 결과에는 'company' 필드가 없다.
-URL 기반 회사 판별 로직을 추가하여 실질적인 회사 커버리지를 확인한다.
+재시도 카운터 설계:
+    retry_count     : T4 검색 충분성 미달 시 재검색 횟수 (max 2)
+    trl_retry_count : TRL 근거 부족 시 재검색 횟수 (max 2)
+    두 카운터를 독립적으로 관리하여 T4 재검색 소진 여부와 무관하게
+    TRL 단계에서 별도 재검색을 시도할 수 있다.
+
+회사 판별 전략:
+    Tavily / DuckDuckGo 검색 결과에는 'company' 필드가 없으므로
+    URL과 title 기반으로 회사명을 추출하여 커버리지를 확인한다.
 """
 from __future__ import annotations
 
@@ -50,13 +53,13 @@ DEFAULT_SEARCH_QUERIES = {
 def _extract_company_from_result(r: dict) -> str:
     """
     검색 결과에서 회사명을 추출한다.
-    'company' 필드가 없는 경우(Tavily/DuckDuckGo 결과) URL로 판별한다.
+    'company' 필드가 없는 경우 URL과 title로 판별한다.
     """
     company = r.get("company", "")
     if company:
         return company
 
-    url = r.get("url", "").lower()
+    url   = r.get("url", "").lower()
     title = (r.get("title", "") + r.get("topic", "")).lower()
 
     if "skhynix" in url or "sk hynix" in title or "skhynix" in title:
@@ -71,50 +74,49 @@ def _extract_company_from_result(r: dict) -> str:
 def run_supervisor(state: AgentState) -> AgentState:
     print("\n[Supervisor] 상태 평가 중...")
 
-    rag_results      = state.get("rag_results", [])
-    web_results      = state.get("web_results", [])
-    rag_done         = state.get("rag_done", False)
-    web_done         = state.get("web_done", False)
-    trl_assessment   = state.get("trl_assessment", "")
-    draft            = state.get("draft", "")
-    iteration_count  = state.get("iteration_count", 0)
-    retry_count      = state.get("retry_count", 0)
-    trl_retry_count  = state.get("trl_retry_count", 0)   # TRL 전용 재시도 카운터
-    trl_ready        = state.get("trl_ready", False)
-    missing_trl_info = state.get("missing_trl_info", [])
+    rag_results       = state.get("rag_results", [])
+    web_results       = state.get("web_results", [])
+    rag_done          = state.get("rag_done", False)
+    web_done          = state.get("web_done", False)
+    trl_assessment    = state.get("trl_assessment", "")
+    draft             = state.get("draft", "")
+    iteration_count   = state.get("iteration_count", 0)
+    retry_count       = state.get("retry_count", 0)
+    trl_retry_count   = state.get("trl_retry_count", 0)
+    trl_ready         = state.get("trl_ready", False)
+    missing_trl_info  = state.get("missing_trl_info", [])
     final_report_path = state.get("final_report_path", "")
 
-    # ── T7 종료: Formatting Node 복귀 후 PDF 생성 확인 ──────────────────────────
-    # 설계서: formatting_node → supervisor → END
+    # T7: Formatting Node 복귀 — PDF 생성 확인 후 종료
     if final_report_path:
         print(f"[Supervisor] PDF 생성 확인 완료 → END | 경로: {final_report_path}")
         state["next"] = "end"
         return state
 
-    # ── T1: 최초 진입 — 검색 계획 수립 ────────────────────────────────────────
+    # T1: 최초 진입 — 검색 계획 수립
     if not state.get("search_queries"):
         state["search_queries"] = _build_search_plan(state.get("query", ""))
 
-    # ── T2: RAG Agent 호출 ───────────────────────────────────────────────────
+    # T2: RAG Agent 호출
     if not rag_done:
         print("[Supervisor] → RAG Agent 실행")
         state["next"] = "rag"
         return state
 
-    # ── T3: Web Search Agent 호출 ────────────────────────────────────────────
+    # T3: Web Search Agent 호출
     if rag_done and not web_done:
         print("[Supervisor] → Web Search Agent 실행")
         state["next"] = "web_search"
         return state
 
-    # ── T4: 검색 결과 충분성 평가 → TRL 평가 분기 ─────────────────────────────
+    # T4: Retrieval Sufficiency Check
     if rag_done and web_done and not trl_assessment:
         retrieval_ok, details = _check_retrieval_sufficiency(rag_results, web_results)
         state["retrieval_ready"]    = retrieval_ok
         state["validation_details"] = details
 
         if not retrieval_ok and retry_count < 2:
-            print(f"[Supervisor] 검색 결과 부족 → RAG/Web 재검색 (T4 재시도 {retry_count + 1}/2)")
+            print(f"[Supervisor] 검색 결과 부족 → 재검색 ({retry_count + 1}/2)")
             state["retry_count"] = retry_count + 1
             state["rag_done"]    = False
             state["web_done"]    = False
@@ -123,7 +125,7 @@ def run_supervisor(state: AgentState) -> AgentState:
             state["next"]        = "rag"
             return state
         elif not retrieval_ok:
-            print("[Supervisor] T4 재검색 max 도달 → 정보 부재 플래그와 함께 진행")
+            print("[Supervisor] 재검색 한도 도달 → 정보 부재 플래그 설정 후 진행")
             state["fallback_flags"] = {
                 **state.get("fallback_flags", {}),
                 "insufficient_data": True,
@@ -133,16 +135,12 @@ def run_supervisor(state: AgentState) -> AgentState:
         state["next"] = "trl"
         return state
 
-    # ── TRL 평가 완료 후 재검색 분기 ──────────────────────────────────────────
+    # T5: TRL 평가 완료 후 분기
     if trl_assessment and not draft:
         if not trl_ready and trl_retry_count < 2:
-            # TRL 근거 부족 → 재검색 (trl_retry_count 사용, retry_count와 독립)
-            print(
-                f"[Supervisor] TRL 정보 부족 → RAG/Web 재검색 "
-                f"(TRL 재시도 {trl_retry_count + 1}/2)"
-            )
+            print(f"[Supervisor] TRL 근거 부족 → 재검색 ({trl_retry_count + 1}/2)")
             state["trl_retry_count"] = trl_retry_count + 1
-            state["feedback"]        = "TRL 평가에 필요한 근거 보강 필요: " + "; ".join(missing_trl_info)
+            state["feedback"]        = "TRL 평가 근거 보강 필요: " + "; ".join(missing_trl_info)
             state["rag_done"]        = False
             state["web_done"]        = False
             state["rag_results"]     = []
@@ -151,7 +149,7 @@ def run_supervisor(state: AgentState) -> AgentState:
             state["next"]            = "rag"
             return state
         elif not trl_ready:
-            print("[Supervisor] TRL 재검색 max 도달 → 한계 명시 후 초안 생성")
+            print("[Supervisor] TRL 재검색 한도 도달 → 한계 명시 후 초안 생성")
             state["fallback_flags"] = {
                 **state.get("fallback_flags", {}),
                 "trl_insufficient": True,
@@ -161,10 +159,10 @@ def run_supervisor(state: AgentState) -> AgentState:
         state["next"] = "draft"
         return state
 
-    # ── T6: 초안 검증 루프 (max 3회) ─────────────────────────────────────────
+    # T6: 초안 검증 루프 (max 3회)
     if draft:
         if iteration_count >= 3:
-            print("[Supervisor] Max iteration 도달 → 최선 초안으로 확정 → 포맷팅")
+            print("[Supervisor] 최대 수정 횟수 도달 → 최선 초안으로 확정")
             state["validation_pass"] = True
             state["next"]            = "format"
             return state
@@ -177,7 +175,7 @@ def run_supervisor(state: AgentState) -> AgentState:
             state["validation_pass"] = True
             state["next"]            = "format"
         else:
-            print(f"[Supervisor] 초안 검증 FAIL → 재작성 요청 (시도 {iteration_count}/3)")
+            print(f"[Supervisor] 초안 검증 FAIL → 재작성 요청 ({iteration_count}/3)")
             state["validation_pass"] = False
             state["feedback"]        = details
             state["next"]            = "draft"
@@ -198,18 +196,19 @@ def _check_retrieval_sufficiency(
     rag_results: list, web_results: list
 ) -> Tuple[bool, str]:
     """
-    T4 검색 충분성 검증.
+    T4 Retrieval Sufficiency Check.
 
-    【company_ok 수정】
-    기존: web_results의 'company' 필드만 확인 → Tavily/DuckDuckGo 결과 누락
-    변경: URL과 title 기반으로도 회사를 추출하여 실질적인 커버리지를 확인
+    통과 조건:
+        - 기술 커버리지: HBM4 / PIM / CXL 각 2건 이상
+        - 회사 커버리지: Samsung, Micron 양쪽 포함
+        - 출처 유형: 3종 이상
     """
     tech_coverage = {"HBM4": 0, "PIM": 0, "CXL": 0}
     source_types  = set()
     companies     = set()
 
     for r in rag_results:
-        content    = r.get("content", "").lower()
+        content = r.get("content", "").lower()
         source_types.add(r.get("source_type", ""))
         if "hbm4" in content or "hbm" in content:
             tech_coverage["HBM4"] += 1
@@ -233,7 +232,6 @@ def _check_retrieval_sufficiency(
         if "cxl" in content or "cxl" in topic:
             tech_coverage["CXL"] += 1
 
-        # URL·title 기반 회사 추출 (company 필드 없는 경우 대응)
         company = _extract_company_from_result(r)
         if company:
             companies.add(company)
@@ -252,6 +250,7 @@ def _check_retrieval_sufficiency(
 
 
 def _validate_draft(draft: str) -> tuple[bool, str]:
+    """LLM 기반 초안 품질 검증."""
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     prompt = SUPERVISOR_VALIDATION_PROMPT.format(draft=draft[:7000])
     response = llm.invoke(prompt)

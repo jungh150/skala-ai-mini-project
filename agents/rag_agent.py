@@ -1,26 +1,18 @@
 """
-RAG Agent: 로컬 문서(arXiv 논문)에서 관련 청크 검색
-- Embedding: bge-m3 (BAAI/bge-m3)
-- Vector DB: FAISS
-- Retrieval: Hybrid (Dense + BM25 Sparse)
-- Query Rewrite 후 재검색 (max 2회)
+rag_agent.py
+RAG Agent — arXiv 논문 기반 로컬 문서 검색
 
-【Dense 점수 정규화 수정】
-기존 코드: normalized = 1 - (score / max_dense)  → 역변환 적용
-문제: HuggingFaceEmbeddings(normalize_embeddings=True) + FAISS IndexFlatL2 조합에서
-     similarity_search_with_score()가 반환하는 score는 L2 거리(낮을수록 유사)이므로
-     역변환(1 - score/max)이 맞다.
-     그러나 normalize_embeddings=True이면 벡터가 단위구로 정규화되어
-     L2 거리와 코사인 유사도가 단조 관계를 갖는다.
-     실제로 FAISS 기본 인덱스(IndexFlatL2)는 L2 거리를 반환하므로
-     낮은 score = 유사도 높음 → 역변환 방향이 맞다.
+구성:
+    Embedding  : BAAI/bge-m3 (다국어 SOTA, max 8192 tokens)
+    Vector DB  : FAISS (IndexFlatL2)
+    Retrieval  : Hybrid — Dense (FAISS, 가중치 0.6) + Sparse (BM25, 가중치 0.4)
+    재검색     : Query Rewrite 후 최대 2회
 
-     다만 기존 코드의 정규화식 `1 - (score / max_dense)`에서
-     max_dense 자체가 가장 유사도가 낮은(거리가 먼) 결과의 score이므로
-     정규화 범위가 [0, 1]로 보장되지 않는 경우가 있다.
-
-     수정: min-max 정규화를 적용하여 Dense 점수를 [0, 1]로 안정적으로 변환한다.
-          정규화 후 유사할수록(L2 거리 작을수록) 높은 값이 되도록 역변환을 유지한다.
+Dense 점수 정규화:
+    FAISS IndexFlatL2는 L2 거리를 반환한다(낮을수록 유사).
+    min-max 정규화 후 역변환하여 유사도 방향을 BM25 점수와 통일한다.
+        normalized = 1 - (score - min) / (max - min + ε)
+    이를 통해 [0, 1] 범위를 보장하고 두 점수를 안정적으로 결합한다.
 """
 import os
 import pickle
@@ -37,7 +29,7 @@ from langchain_openai import ChatOpenAI
 
 from agents.state import AgentState
 
-# arXiv 논문 URL 목록
+# 평가 대상 arXiv 논문 (PIM 5편, CXL 2편)
 ARXIV_PDFS = [
     {
         "url": "https://arxiv.org/pdf/2012.03112",
@@ -96,9 +88,9 @@ class RAGAgent:
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )
-        self.vectorstore: Optional[FAISS] = None
+        self.vectorstore: Optional[FAISS]     = None
         self.bm25:        Optional[BM25Okapi] = None
-        self.all_docs:    List[Document] = []
+        self.all_docs:    List[Document]      = []
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
             chunk_overlap=100,
@@ -107,7 +99,7 @@ class RAGAgent:
         self._initialized = False
 
     def _download_pdf(self, url: str, title: str) -> Optional[str]:
-        """PDF 다운로드 및 캐시"""
+        """PDF를 다운로드하고 로컬에 캐시한다."""
         os.makedirs(CACHE_DIR, exist_ok=True)
         url_hash   = hashlib.md5(url.encode()).hexdigest()[:8]
         safe_title = "".join(c for c in title if c.isalnum() or c in " -_")[:40]
@@ -132,15 +124,14 @@ class RAGAgent:
             return None
 
     def initialize(self):
-        """FAISS 인덱스 및 BM25 초기화 (캐시 활용)"""
+        """FAISS 인덱스 및 BM25를 초기화한다. 캐시가 있으면 로드한다."""
         if self._initialized:
             return
 
         os.makedirs("data", exist_ok=True)
 
-        # 캐시 존재 시 로드
         if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(BM25_CACHE_PATH):
-            print("[RAG] 기존 인덱스 로드 중...")
+            print("[RAG] 인덱스 로드 중...")
             try:
                 self.vectorstore = FAISS.load_local(
                     FAISS_INDEX_PATH,
@@ -157,7 +148,6 @@ class RAGAgent:
             except Exception as e:
                 print(f"[RAG] 캐시 로드 실패, 재생성: {e}")
 
-        # PDF 다운로드 및 인덱싱
         print("[RAG] 문서 인덱싱 시작...")
         all_chunks = []
 
@@ -179,7 +169,7 @@ class RAGAgent:
                 all_chunks.extend(chunks)
                 print(f"  [인덱싱] {paper['title']}: {len(chunks)}청크")
             except Exception as e:
-                print(f"  [오류] {paper['title']}: {e}")
+                print(f"  [인덱싱 실패] {paper['title']}: {e}")
 
         if not all_chunks:
             print("[RAG] 경고: 인덱싱된 문서 없음")
@@ -188,12 +178,10 @@ class RAGAgent:
 
         self.all_docs = all_chunks
 
-        # FAISS 인덱스 생성
         print("[RAG] FAISS 인덱스 생성 중...")
         self.vectorstore = FAISS.from_documents(all_chunks, self.embeddings)
         self.vectorstore.save_local(FAISS_INDEX_PATH)
 
-        # BM25 인덱스 생성
         print("[RAG] BM25 인덱스 생성 중...")
         tokenized_corpus = [doc.page_content.split() for doc in all_chunks]
         self.bm25 = BM25Okapi(tokenized_corpus)
@@ -206,33 +194,22 @@ class RAGAgent:
 
     def _hybrid_search(self, query: str, k: int = 5) -> List[Document]:
         """
-        Hybrid Retrieval: Dense(FAISS) + Sparse(BM25) → 점수 통합
+        Hybrid Retrieval: Dense (FAISS) + Sparse (BM25) 점수 통합.
 
-        【Dense 점수 정규화 수정】
-        FAISS.similarity_search_with_score()는 IndexFlatL2 기준으로
-        L2 거리(낮을수록 유사)를 반환한다.
-
-        기존 코드: normalized = 1 - (score / max_dense)
-          - max_dense 단일값으로 나누면 분포가 [0, 1] 범위를 보장하지 않음
-          - min이 0이 아닌 경우 정규화 결과가 왜곡될 수 있음
-
-        수정: min-max 정규화 적용
-          normalized = 1 - (score - min_dense) / (max_dense - min_dense + ε)
-          - L2 거리이므로 역변환(1 - x)으로 유사도 방향을 맞춤
-          - [0, 1] 범위 보장
+        Dense 점수 정규화:
+            L2 거리를 min-max 정규화 후 역변환하여 [0, 1] 범위의 유사도로 변환한다.
+            normalized = 1 - (score - min) / (max - min + ε)
         """
         dense_docs: List[tuple] = []
         bm25_docs:  List[tuple] = []
 
-        # Dense Retrieval (FAISS)
         if self.vectorstore:
             try:
-                raw = self.vectorstore.similarity_search_with_score(query, k=k * 2)
+                raw        = self.vectorstore.similarity_search_with_score(query, k=k * 2)
                 dense_docs = [(doc, score) for doc, score in raw]
             except Exception:
                 dense_docs = []
 
-        # Sparse Retrieval (BM25)
         if self.bm25 and self.all_docs:
             tokenized_query = query.split()
             bm25_scores     = self.bm25.get_scores(tokenized_query)
@@ -243,24 +220,23 @@ class RAGAgent:
             )[:k * 2]
             bm25_docs = [(self.all_docs[i], bm25_scores[i]) for i in top_indices]
 
-        doc_scores: Dict[str, float] = {}
+        doc_scores: Dict[str, float]    = {}
         doc_map:    Dict[str, Document] = {}
 
-        # ── Dense: min-max 정규화 후 역변환 (L2 거리 → 유사도) ────────────────
+        # Dense: min-max 정규화 + 역변환 (L2 거리 → 유사도)
         if dense_docs:
-            scores     = [s for _, s in dense_docs]
-            min_dense  = min(scores)
-            max_dense  = max(scores)
-            denom      = max_dense - min_dense + 1e-8
+            scores    = [s for _, s in dense_docs]
+            min_dense = min(scores)
+            max_dense = max(scores)
+            denom     = max_dense - min_dense + 1e-8
 
             for doc, score in dense_docs:
                 key        = doc.page_content[:100]
-                # L2 거리: 작을수록 유사 → 1 - 정규화값으로 역변환
                 normalized = 1.0 - (score - min_dense) / denom
                 doc_scores[key] = doc_scores.get(key, 0.0) + normalized * 0.6
                 doc_map[key]    = doc
 
-        # ── BM25: max 정규화 (높을수록 관련성 높음) ───────────────────────────
+        # BM25: max 정규화
         if bm25_docs:
             max_bm25 = max(s for _, s in bm25_docs) if bm25_docs else 1.0
             for doc, score in bm25_docs:
@@ -273,7 +249,7 @@ class RAGAgent:
         return [doc_map[key] for key in sorted_keys[:k]]
 
     def _rewrite_query(self, query: str, attempt: int) -> str:
-        """쿼리 재작성"""
+        """검색 결과가 부족할 때 쿼리를 재작성한다."""
         prompt = (
             f"다음 검색 쿼리를 HBM4, PIM, CXL 반도체 기술 문서 검색에 더 적합하게 재작성하십시오.\n"
             f"시도 횟수: {attempt}\n"
@@ -284,7 +260,7 @@ class RAGAgent:
         return response.content.strip()
 
     def search(self, query: str, retry_count: int = 0) -> List[Dict]:
-        """RAG 검색 수행 (재검색 포함)"""
+        """Hybrid 검색을 수행한다. 결과가 없으면 Query Rewrite 후 재시도한다."""
         self.initialize()
 
         if not self.vectorstore and not self.bm25:
@@ -294,32 +270,32 @@ class RAGAgent:
         for attempt in range(retry_count + 1):
             if attempt > 0:
                 current_query = self._rewrite_query(query, attempt)
-                print(f"  [RAG] 쿼리 재작성 (시도 {attempt}): {current_query}")
+                print(f"  [RAG] 쿼리 재작성 ({attempt}): {current_query}")
 
             docs = self._hybrid_search(current_query, k=5)
 
             if docs:
-                results = []
-                for doc in docs:
-                    results.append({
+                return [
+                    {
                         "content":     doc.page_content,
                         "title":       doc.metadata.get("title", "Unknown"),
                         "category":    doc.metadata.get("category", "Unknown"),
                         "source_type": doc.metadata.get("source_type", "논문"),
                         "url":         doc.metadata.get("url", ""),
                         "page":        doc.metadata.get("page", 0),
-                    })
-                return results
+                    }
+                    for doc in docs
+                ]
 
         return [{"content": "검색 결과 없음", "source": "N/A", "fallback": True}]
 
 
 def run_rag_agent(state: AgentState) -> AgentState:
-    """RAG Agent 노드 실행"""
+    """RAG Agent 노드 진입점."""
     print("\n[RAG Agent] 문서 검색 시작...")
     agent = _get_rag_agent()
 
-    queries     = state.get("search_queries", {}).get("rag") or _generate_rag_queries(state["query"])
+    queries     = state.get("search_queries", {}).get("rag") or _default_rag_queries()
     all_results = []
 
     for q in queries:
@@ -327,7 +303,7 @@ def run_rag_agent(state: AgentState) -> AgentState:
         results = agent.search(q, retry_count=min(state.get("retry_count", 0), 2))
         all_results.extend(results)
 
-    # 중복 제거
+    # 중복 제거 (내용 앞 80자 기준)
     seen   = set()
     unique = []
     for r in all_results:
@@ -342,8 +318,8 @@ def run_rag_agent(state: AgentState) -> AgentState:
     return state
 
 
-def _generate_rag_queries(user_query: str) -> List[str]:
-    """RAG용 다각화 쿼리 생성"""
+def _default_rag_queries() -> List[str]:
+    """search_queries가 없을 때 사용하는 기본 쿼리셋."""
     return [
         "HBM4 High Bandwidth Memory architecture development",
         "Processing-In-Memory PIM technology DRAM",
@@ -353,7 +329,7 @@ def _generate_rag_queries(user_query: str) -> List[str]:
     ]
 
 
-# 싱글턴 패턴
+# 싱글턴 — 임베딩 모델을 매 호출마다 재로드하지 않기 위해 인스턴스를 재사용한다.
 _rag_agent_instance: Optional[RAGAgent] = None
 
 

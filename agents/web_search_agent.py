@@ -1,8 +1,15 @@
 """
-Web Search Agent: 최신 뉴스·IR·특허·기술 블로그 검색
-- 확증 편향 방지: 다각도 쿼리 (SK Hynix / Samsung / Micron / 부정 / 중립)
-- Tavily API 사용 (fallback: DuckDuckGo)
-- 출처 다양성 강제 (뉴스/논문/특허/채용공고/IR)
+web_search_agent.py
+Web Search Agent — 최신 뉴스·IR·특허·기술 블로그 검색
+
+검색 전략:
+    1. 기업 공식 페이지 (WebBaseLoader) — Samsung 4건, SK Hynix 2건, Micron 1건
+    2. Tavily API — 5개 관점 다각도 쿼리 (SK Hynix / Samsung / Micron / 부정 / 중립)
+    3. DuckDuckGo — Tavily 실패 시 fallback
+
+확증 편향 방지:
+    관점별 쿼리 분리 실행으로 특정 회사에 유리한 정보만 수집되는 편향을 방지한다.
+    출처 유형(뉴스/논문/특허/IR/채용공고)을 분류하여 다양성을 확보한다.
 """
 import os
 import time
@@ -13,7 +20,7 @@ from langchain_openai import ChatOpenAI
 
 from agents.state import AgentState
 
-# 기업 공식 페이지 (WebBaseLoader)
+# 기업 공식 페이지 목록
 OFFICIAL_PAGES = [
     {
         "url": "https://semiconductor.samsung.com/news-events/tech-blog/harnessing-the-ai-era-with-breakthrough-memory-solutions/",
@@ -69,11 +76,10 @@ class WebSearchAgent:
         self._official_loaded = False
 
     def _load_official_pages(self) -> List[Dict]:
-        """공식 페이지 WebBaseLoader로 로드 (캐시)"""
+        """공식 페이지를 WebBaseLoader로 로드한다. 결과는 로컬에 캐시한다."""
         if self._official_loaded:
             return self._official_content
 
-        import os
         import pickle
         os.makedirs(WEB_CACHE_DIR, exist_ok=True)
         cache_path = os.path.join(WEB_CACHE_DIR, "official_pages.pkl")
@@ -94,20 +100,20 @@ class WebSearchAgent:
                 print(f"  [Web] 로드 중: {page_info['company']} - {page_info['topic']}")
                 loader = WebBaseLoader(page_info["url"])
                 loader.requests_kwargs = {"timeout": 30, "headers": {"User-Agent": "Mozilla/5.0"}}
-                docs = loader.load()
+                docs    = loader.load()
                 content = " ".join([d.page_content[:2000] for d in docs])
                 if content.strip():
                     results.append({
-                        "content": content[:3000],
-                        "company": page_info["company"],
-                        "topic": page_info["topic"],
+                        "content":     content[:3000],
+                        "company":     page_info["company"],
+                        "topic":       page_info["topic"],
                         "source_type": page_info["source_type"],
-                        "url": page_info["url"]
+                        "url":         page_info["url"],
                     })
                     print(f"  [완료] {page_info['company']} ({len(content)}자)")
-                time.sleep(1)  # 요청 간격
+                time.sleep(1)
             except Exception as e:
-                print(f"  [실패] {page_info['url']}: {e}")
+                print(f"  [로드 실패] {page_info['url']}: {e}")
 
         self._official_content = results
         with open(cache_path, "wb") as f:
@@ -117,63 +123,59 @@ class WebSearchAgent:
         return results
 
     def _search_tavily(self, queries: List[str]) -> List[Dict]:
-        """Tavily API 검색"""
+        """Tavily API로 검색한다."""
         try:
             from tavily import TavilyClient
             api_key = os.getenv("TAVILY_API_KEY")
             if not api_key:
                 raise ValueError("TAVILY_API_KEY not set")
 
-            client = TavilyClient(api_key=api_key)
+            client  = TavilyClient(api_key=api_key)
             results = []
 
             for q in queries:
                 try:
-                    response = client.search(
-                        query=q,
-                        max_results=3,
-                        search_depth="basic"
-                    )
+                    response = client.search(query=q, max_results=3, search_depth="basic")
                     for r in response.get("results", []):
                         results.append({
-                            "content": r.get("content", ""),
-                            "url": r.get("url", ""),
-                            "title": r.get("title", ""),
+                            "content":     r.get("content", ""),
+                            "url":         r.get("url", ""),
+                            "title":       r.get("title", ""),
                             "source_type": self._classify_source(r.get("url", "")),
-                            "query": q
+                            "query":       q,
                         })
                 except Exception as e:
-                    print(f"  [Tavily 오류] {q}: {e}")
+                    print(f"  [Tavily] {q}: {e}")
 
             return results
         except Exception:
             return []
 
     def _search_duckduckgo(self, queries: List[str]) -> List[Dict]:
-        """DuckDuckGo 검색 (Tavily fallback)"""
+        """DuckDuckGo로 검색한다. Tavily 실패 시 fallback으로 사용된다."""
         try:
             from duckduckgo_search import DDGS
             results = []
             with DDGS() as ddgs:
-                for q in queries[:3]:  # DuckDuckGo는 3개 쿼리로 제한
+                for q in queries[:3]:
                     try:
                         for r in ddgs.text(q, max_results=3):
                             results.append({
-                                "content": r.get("body", ""),
-                                "url": r.get("href", ""),
-                                "title": r.get("title", ""),
+                                "content":     r.get("body", ""),
+                                "url":         r.get("href", ""),
+                                "title":       r.get("title", ""),
                                 "source_type": self._classify_source(r.get("href", "")),
-                                "query": q
+                                "query":       q,
                             })
                         time.sleep(0.5)
                     except Exception as e:
-                        print(f"  [DDG 오류] {q}: {e}")
+                        print(f"  [DuckDuckGo] {q}: {e}")
             return results
         except Exception:
             return []
 
     def _classify_source(self, url: str) -> str:
-        """URL 기반 출처 유형 분류"""
+        """URL 패턴으로 출처 유형을 분류한다."""
         url_lower = url.lower()
         if any(x in url_lower for x in ["arxiv", "ieee", "acm", "scholar"]):
             return "논문"
@@ -188,36 +190,30 @@ class WebSearchAgent:
         else:
             return "뉴스"
 
-    def _generate_diverse_queries(self, base_query: str) -> List[str]:
-        """확증 편향 방지를 위한 다각화 쿼리 생성"""
+    def _diverse_queries(self, base_query: str) -> List[str]:
+        """
+        확증 편향 방지를 위한 다각화 쿼리를 반환한다.
+        SK Hynix / Samsung / Micron / 부정 / 중립 / PIM / CXL 7개 관점으로 구성한다.
+        """
         return [
-            # SK Hynix 관점
             "SK Hynix HBM4 development mass production 2025",
-            # Samsung 관점
             "Samsung HBM4 development strategy competition 2025",
-            # Micron 관점
             "Micron HBM4 customers shipment AI 2025",
-            # 부정 관점
             "HBM4 PIM CXL technical challenges limitations problems",
-            # 중립 관점
             "HBM4 PIM CXL industry comparison analysis 2025",
-            # PIM 특화
             "Processing-In-Memory semiconductor AI inference 2025",
-            # CXL 특화
             "CXL memory compute express link adoption 2025",
         ]
 
     def search(self, query: str, planned_queries: Optional[List[str]] = None) -> List[Dict]:
-        """웹 검색 수행 (공식 페이지 + 검색 API)"""
+        """공식 페이지 로드 + 검색 API 실행으로 웹 검색을 수행한다."""
         all_results = []
 
-        # 1. 공식 페이지 로드
         print("  [Web] 공식 페이지 로드 중...")
         official = self._load_official_pages()
         all_results.extend(official)
 
-        # 2. 검색 API (Tavily 우선, DuckDuckGo fallback)
-        queries = planned_queries or self._generate_diverse_queries(query)
+        queries = planned_queries or self._diverse_queries(query)
         print(f"  [Web] 검색 API 쿼리 {len(queries)}개 실행...")
 
         tavily_results = self._search_tavily(queries)
@@ -230,12 +226,11 @@ class WebSearchAgent:
             print(f"  [DuckDuckGo] {len(ddg_results)}개 결과")
             all_results.extend(ddg_results)
 
-        # 3. 출처 다양성 확인
         source_types = set(r.get("source_type", "") for r in all_results)
         print(f"  [Web] 출처 유형: {source_types}")
 
-        # 중복 제거
-        seen_urls = set()
+        # 중복 제거 (URL 기준)
+        seen_urls      = set()
         unique_results = []
         for r in all_results:
             url = r.get("url", r.get("content", "")[:50])
@@ -247,11 +242,11 @@ class WebSearchAgent:
 
 
 def run_web_search_agent(state: AgentState) -> AgentState:
-    """Web Search Agent 노드 실행"""
+    """Web Search Agent 노드 진입점."""
     print("\n[Web Search Agent] 웹 검색 시작...")
-    agent = WebSearchAgent()
+    agent   = WebSearchAgent()
     results = agent.search(state["query"], state.get("search_queries", {}).get("web"))
     print(f"[Web Search Agent] 검색 완료: {len(results)}개 결과")
     state["web_results"] = results
-    state["web_done"] = True
+    state["web_done"]    = True
     return state

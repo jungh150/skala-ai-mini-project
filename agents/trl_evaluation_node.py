@@ -1,7 +1,14 @@
 """
-TRL Evaluation Node: 수집된 RAG/Web 결과를 바탕으로 기술·회사별 TRL을 추정
-- 검색은 수행하지 않고 평가만 담당
-- 근거가 부족하면 missing_trl_info를 통해 Supervisor에 재검색 신호 전달
+trl_evaluation_node.py
+TRL Evaluation Node — 수집된 RAG/웹 결과 기반 기술·회사별 TRL 추정
+
+역할:
+    검색 결과를 구조화된 근거로 정리한 뒤 LLM이 TRL을 추정한다.
+    근거가 부족한 항목은 missing_trl_info에 기록하여
+    Supervisor가 재검색 여부를 판단할 수 있도록 신호를 전달한다.
+
+Node로 분류하는 이유:
+    검색 실행 없이 평가만 수행하므로 Agent가 아닌 독립 Node로 분류한다.
 """
 from __future__ import annotations
 
@@ -18,15 +25,12 @@ def _format_rag_results(rag_results: List[Dict]) -> str:
 
     formatted = []
     for i, r in enumerate(rag_results[:12], 1):
-        title = r.get("title", "Unknown")
-        url = r.get("url", "")
-        category = r.get("category", "")
-        source_type = r.get("source_type", "논문")
-        content = r.get("content", "")[:700]
         formatted.append(
-            f"[{i}] 제목: {title} | 기술: {category} | 출처유형: {source_type}\n"
-            f"    URL: {url}\n"
-            f"    내용: {content}\n"
+            f"[{i}] 제목: {r.get('title', 'Unknown')} | "
+            f"기술: {r.get('category', '')} | "
+            f"출처유형: {r.get('source_type', '논문')}\n"
+            f"    URL: {r.get('url', '')}\n"
+            f"    내용: {r.get('content', '')[:700]}\n"
         )
     return "\n".join(formatted)
 
@@ -37,20 +41,21 @@ def _format_web_results(web_results: List[Dict]) -> str:
 
     formatted = []
     for i, r in enumerate(web_results[:20], 1):
-        company = r.get("company", "") or "미분류"
-        topic = r.get("topic", "") or r.get("title", "")
-        source_type = r.get("source_type", "뉴스")
-        url = r.get("url", "")
-        content = r.get("content", "")[:600]
+        company     = r.get("company", "") or "미분류"
+        topic       = r.get("topic", "") or r.get("title", "")
         formatted.append(
-            f"[{i}] 회사: {company} | 토픽: {topic} | 출처유형: {source_type}\n"
-            f"    URL: {url}\n"
-            f"    내용: {content}\n"
+            f"[{i}] 회사: {company} | 토픽: {topic} | "
+            f"출처유형: {r.get('source_type', '뉴스')}\n"
+            f"    URL: {r.get('url', '')}\n"
+            f"    내용: {r.get('content', '')[:600]}\n"
         )
     return "\n".join(formatted)
 
 
-def _collect_structured_evidence(rag_results: List[Dict], web_results: List[Dict]) -> Dict[str, List[Dict]]:
+def _collect_structured_evidence(
+    rag_results: List[Dict], web_results: List[Dict]
+) -> Dict[str, List[Dict]]:
+    """검색 결과를 기술별·회사별 버킷으로 구조화한다."""
     buckets: Dict[str, List[Dict]] = {
         "HBM4": [], "PIM": [], "CXL": [],
         "SK Hynix": [], "Samsung": [], "Micron": [],
@@ -59,10 +64,10 @@ def _collect_structured_evidence(rag_results: List[Dict], web_results: List[Dict
     for r in rag_results:
         text = f"{r.get('title','')} {r.get('content','')} {r.get('category','')}".lower()
         item = {
-            "title": r.get("title", ""),
-            "url": r.get("url", ""),
+            "title":       r.get("title", ""),
+            "url":         r.get("url", ""),
             "source_type": r.get("source_type", "논문"),
-            "snippet": r.get("content", "")[:240],
+            "snippet":     r.get("content", "")[:240],
         }
         if "hbm4" in text or "hbm" in text:
             buckets["HBM4"].append(item)
@@ -74,10 +79,10 @@ def _collect_structured_evidence(rag_results: List[Dict], web_results: List[Dict
     for r in web_results:
         text = f"{r.get('title','')} {r.get('topic','')} {r.get('content','')} {r.get('company','')}".lower()
         item = {
-            "title": r.get("title", r.get("topic", "")),
-            "url": r.get("url", ""),
+            "title":       r.get("title", r.get("topic", "")),
+            "url":         r.get("url", ""),
             "source_type": r.get("source_type", "뉴스"),
-            "snippet": r.get("content", "")[:240],
+            "snippet":     r.get("content", "")[:240],
         }
         if "hbm4" in text or "hbm" in text:
             buckets["HBM4"].append(item)
@@ -102,6 +107,7 @@ def _collect_structured_evidence(rag_results: List[Dict], web_results: List[Dict
 
 
 def _infer_missing_info(evidence: Dict[str, List[Dict]]) -> List[str]:
+    """근거가 부족한 항목을 식별하여 반환한다."""
     missing: List[str] = []
     for tech in ["HBM4", "PIM", "CXL"]:
         if len(evidence.get(tech, [])) < 2:
@@ -113,25 +119,25 @@ def _infer_missing_info(evidence: Dict[str, List[Dict]]) -> List[str]:
 
 
 def run_trl_evaluation_node(state: AgentState) -> AgentState:
+    """TRL Evaluation Node 진입점."""
     print("\n[TRL Evaluation Node] TRL 평가 시작...")
 
     rag_results = state.get("rag_results", [])
     web_results = state.get("web_results", [])
-    evidence = _collect_structured_evidence(rag_results, web_results)
-    missing = _infer_missing_info(evidence)
+    evidence    = _collect_structured_evidence(rag_results, web_results)
+    missing     = _infer_missing_info(evidence)
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm    = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     prompt = TRL_EVALUATION_PROMPT.format(
         rag_results=_format_rag_results(rag_results),
         web_results=_format_web_results(web_results),
     )
-    response = llm.invoke(prompt)
-    assessment = response.content.strip()
+    assessment = llm.invoke(prompt).content.strip()
 
-    state["trl_evidence"] = evidence
-    state["trl_assessment"] = assessment
+    state["trl_evidence"]    = evidence
+    state["trl_assessment"]  = assessment
     state["missing_trl_info"] = missing
-    state["trl_ready"] = len(missing) == 0
+    state["trl_ready"]       = len(missing) == 0
 
-    print(f"[TRL Evaluation Node] 평가 완료 | missing: {len(missing)}건 | trl_ready={state['trl_ready']}")
+    print(f"[TRL Evaluation Node] 완료 | missing: {len(missing)}건 | trl_ready={state['trl_ready']}")
     return state

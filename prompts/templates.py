@@ -1,5 +1,6 @@
 """
-프롬프트 템플릿 모음
+prompts/templates.py
+워크플로우 전체에서 사용하는 프롬프트 템플릿 모음
 """
 
 SUPERVISOR_VALIDATION_PROMPT = """다음 보고서 초안을 아래 기준으로 검증하십시오.
@@ -24,7 +25,7 @@ SUPERVISOR_VALIDATION_PROMPT = """다음 보고서 초안을 아래 기준으로
 TRL_EVALUATION_PROMPT = """당신은 반도체 기술 TRL(Technology Readiness Level) 평가 전문가입니다.
 아래 공개 정보를 분석하여 HBM4, PIM, CXL에 대해 SK Hynix / Samsung / Micron의 TRL을 추정하십시오.
 
-## 중요 원칙
+## 평가 원칙
 - 수집된 근거가 말해주는 범위 안에서만 판단할 것
 - 특정 회사에 유리하거나 불리한 값을 미리 가정하지 말 것
 - TRL 7~9는 양산, 출하, 고객사 공급, 공식 발표 등 직접 확인 가능한 근거가 있을 때만 부여
@@ -48,7 +49,7 @@ TRL_EVALUATION_PROMPT = """당신은 반도체 기술 TRL(Technology Readiness L
 - Micron: ...
 
 ### 부족 정보
-- [있으면 기술/회사별로 부족한 근거를 bullet로 나열]
+- [기술/회사별 부족한 근거를 bullet로 나열]
 
 ## 수집된 정보
 ### RAG 검색 결과
